@@ -1,0 +1,62 @@
+name: Deploy Game ZIP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'game.zip'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract game
+        run: |
+          mkdir -p _site
+          python3 - <<'PY'
+          import zipfile, os, shutil
+          with zipfile.ZipFile('game.zip') as z:
+              for member in z.infolist():
+                  target = os.path.abspath(os.path.join('_site', member.filename))
+                  if not target.startswith(os.path.abspath('_site') + os.sep):
+                      raise ValueError('Unsafe ZIP path')
+              z.extractall('_site')
+          if not os.path.isfile('_site/index.html'):
+              dirs = [x for x in os.listdir('_site') if os.path.isdir(os.path.join('_site', x))]
+              if len(dirs) == 1 and os.path.isfile(os.path.join('_site', dirs[0], 'index.html')):
+                  folder = os.path.join('_site', dirs[0])
+                  for item in os.listdir(folder):
+                      shutil.move(os.path.join(folder, item), os.path.join('_site', item))
+                  os.rmdir(folder)
+          if not os.path.isfile('_site/index.html'):
+              raise ValueError('index.html not found at game root')
+          PY
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload website
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy website
+        id: deployment
+        uses: actions/deploy-pages@v4
