@@ -34,14 +34,14 @@ jobs:
           python3 - <<'PY'
           import zipfile, os, shutil, glob, re
 
-                    files = glob.glob('Kehidupan_LifeSim_v*.zip')
+          files = glob.glob('Kehidupan_LifeSim_v*.zip')
 
-                    def version_number(path):
+          def version_number(path):
               match = re.fullmatch(r'Kehidupan_LifeSim_v(\d+(?:\.\d+)*)\.zip', os.path.basename(path))
               return tuple(map(int, match.group(1).split('.'))) if match else (-1,)
 
           if files:
-                            selected_zip = max(files, key=version_number)
+          selected_zip = max(files, key=version_number)
           else:
               selected_zip = 'game.zip'
 
