@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Game version (optional, e.g. 16.6)"
+        description: "Game version (optional, e.g. 16.7)"
         required: false
         type: string
 
@@ -47,13 +47,31 @@ jobs:
           ROOT = Path(".")
           SITE = Path("_site")
 
-          PATTERN = re.compile(
-              r"^Kehidupan_LifeSim_v"
-              r"(?P<version>\d+(?:\.\d+)*)"
-              r"_Part(?P<part>\d+)of(?P<total>\d+)"
-              r"\.zip$",
-              re.IGNORECASE
-          )
+          PATTERNS = [
+              re.compile(
+                  r"^Kehidupan_LifeSim_v"
+                  r"(?P<version>\d+(?:\.\d+)*)"
+                  r"_Part(?P<part>\d+)of(?P<total>\d+)"
+                  r"\.zip$",
+                  re.IGNORECASE
+              ),
+              re.compile(
+                  r"^LifeSim_v"
+                  r"(?P<major>\d+)_(?P<minor>\d+)"
+                  r"_AudioFix_7Parts_"
+                  r"(?P<part>\d+)of(?P<total>\d+)"
+                  r"\.zip$",
+                  re.IGNORECASE
+              ),
+              re.compile(
+                  r"^LifeSim_v"
+                  r"(?P<major>\d+)_(?P<minor>\d+)"
+                  r"_SMALL_"
+                  r"(?P<part>\d+)of(?P<total>\d+)"
+                  r"\.zip$",
+                  re.IGNORECASE
+              ),
+          ]
 
           groups = {}
 
@@ -61,18 +79,29 @@ jobs:
               if not file.is_file():
                   continue
 
-              match = PATTERN.fullmatch(file.name)
+              for pattern in PATTERNS:
+                  match = pattern.fullmatch(file.name)
 
-              if not match:
-                  continue
+                  if not match:
+                      continue
 
-              version = match.group("version")
-              part = int(match.group("part"))
-              total = int(match.group("total"))
+                  data = match.groupdict()
 
-              groups.setdefault(version, []).append(
-                  (part, total, file)
-              )
+                  if data.get("version"):
+                      version = data["version"]
+                  else:
+                      version = (
+                          f"{data['major']}."
+                          f"{data['minor']}"
+                      )
+
+                  part = int(data["part"])
+                  total = int(data["total"])
+
+                  groups.setdefault(version, []).append(
+                      (part, total, file)
+                  )
+                  break
 
           if not groups:
               raise SystemExit(
@@ -86,9 +115,9 @@ jobs:
           if requested:
               if requested not in groups:
                   raise SystemExit(
-                      f"Version {requested} not found."
+                      f"Version {requested} not found. "
+                      f"Available: {sorted(groups)}"
                   )
-
               version = requested
           else:
               version = max(
@@ -103,7 +132,8 @@ jobs:
 
           if len(totals) != 1:
               raise SystemExit(
-                  "Inconsistent package totals."
+                  "Inconsistent package totals for "
+                  f"version {version}."
               )
 
           expected_total = totals.pop()
@@ -134,6 +164,9 @@ jobs:
 
           print("Selected version:", version)
           print("Package count:", len(packages))
+
+          for package in packages:
+              print("Package:", package.name)
 
           if SITE.exists():
               shutil.rmtree(SITE)
