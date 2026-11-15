@@ -2,11 +2,6 @@
 name: Deploy Game ZIP
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '*.zip'
-      - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
 permissions:
@@ -21,6 +16,8 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -29,99 +26,106 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract and validate game
+      - name: Extract and validate full game
         shell: bash
         run: |
           python3 - <<'PY'
-          import glob
-          import re
+          import os
           import shutil
+          import stat
           import zipfile
-          from pathlib import Path
+          from pathlib import Path, PurePosixPath
 
-          CORE = re.compile(r'^Kehidupan_LifeSim_v(\d+(?:\.\d+)*)\.zip$')
-          MIN_SPLIT_VERSION = (12, 6)
+          SOURCE = Path("deploy-packages")
+          SITE = Path("_site")
+          MAX_FILES = 50000
+          MAX_SIZE = 2 * 1024**3
 
-          site = Path('_site')
-          site.mkdir(exist_ok=True)
-
-          candidates = []
-
-          for filename in glob.glob('Kehidupan_LifeSim_v*.zip'):
-              match = CORE.fullmatch(Path(filename).name)
-              if match:
-                  version = tuple(
-                      int(x) for x in match.group(1).split('.')
-                  )
-                  candidates.append(
-                      (version, match.group(1), Path(filename))
-                  )
-
-          if not candidates:
+          if not SOURCE.is_dir():
               raise SystemExit(
-                  'No valid Kehidupan_LifeSim_vX.Y.zip found'
+                  "Missing deploy-packages folder."
               )
 
-          version, version_text, core_zip = max(
-              candidates,
-              key=lambda x: x[0]
+          packages = sorted(
+              p for p in SOURCE.iterdir()
+              if p.is_file()
+              and p.suffix.lower() == ".zip"
           )
 
-          assets_zip = Path(
-              f'Kehidupan_LifeSim_Assets_v{version_text}.zip'
-          )
-
-          split_required = version >= MIN_SPLIT_VERSION
-
-          if split_required and not assets_zip.is_file():
+          if not packages:
               raise SystemExit(
-                  f'Missing matching assets ZIP: {assets_zip}. '
-                  'Deployment blocked.'
+                  "No ZIP packages found."
               )
 
-          packages = [core_zip]
+          print(f"Found {len(packages)} ZIP packages")
 
-          if assets_zip.is_file():
-              packages.append(assets_zip)
+          if SITE.exists():
+              shutil.rmtree(SITE)
 
-          print('Deploying version:', version_text)
-          print('Packages:', ', '.join(map(str, packages)))
+          SITE.mkdir()
 
-          seen = {}
+          seen = set()
+          total_size = 0
+          total_files = 0
 
           for package in packages:
+              print(f"Extracting: {package.name}")
+
               with zipfile.ZipFile(package) as archive:
-                  for entry in archive.infolist():
-                      path = Path(
-                          entry.filename.replace('\\', '/')
+                  bad = archive.testzip()
+
+                  if bad:
+                      raise ValueError(
+                          f"Corrupt ZIP: {package.name}: {bad}"
                       )
 
+                  for entry in archive.infolist():
+                      raw = entry.filename.replace("\\", "/")
+                      path = PurePosixPath(raw)
+
                       if (
-                          path.is_absolute()
-                          or '..' in path.parts
-                          or not path.parts
-                          or ':' in path.parts[0]
+                          not raw
+                          or raw.startswith("/")
+                          or any(
+                              part in ("", ".", "..")
+                              for part in raw.split("/")
+                              if part != ""
+                          )
+                          or ".." in path.parts
+                          or ":" in path.parts[0]
                       ):
                           raise ValueError(
-                              f'Unsafe ZIP path: {entry.filename}'
+                              f"Unsafe ZIP path: {raw}"
+                          )
+
+                      mode = entry.external_attr >> 16
+
+                      if stat.S_ISLNK(mode):
+                          raise ValueError(
+                              f"Symlink forbidden: {raw}"
                           )
 
                       if entry.is_dir():
                           continue
 
-                      target = site.joinpath(*path.parts)
-
-                      if target.is_symlink():
-                          raise ValueError(
-                              f'Symlink destination forbidden: {target}'
-                          )
-
                       if path.as_posix() in seen:
                           raise ValueError(
-                              f'Duplicate path across ZIPs: {path}'
+                              f"Duplicate file: {raw}"
                           )
 
-                      seen[path.as_posix()] = str(package)
+                      seen.add(path.as_posix())
+                      total_files += 1
+                      total_size += entry.file_size
+
+                      if (
+                          total_files > MAX_FILES
+                          or total_size > MAX_SIZE
+                      ):
+                          raise ValueError(
+                              "Deployment safety limit exceeded"
+                          )
+
+                      target = SITE.joinpath(*path.parts)
 
                       target.parent.mkdir(
                           parents=True,
@@ -129,51 +133,61 @@ jobs:
                       )
 
                       with archive.open(entry) as src:
-                          with target.open('wb') as dst:
+                          with target.open("wb") as dst:
                               shutil.copyfileobj(src, dst)
 
-          index = site / 'index.html'
+          index = SITE / "index.html"
 
           if not index.is_file():
               dirs = [
-                  p for p in site.iterdir()
+                  p for p in SITE.iterdir()
                   if p.is_dir()
               ]
-
               files = [
-                  p for p in site.iterdir()
+                  p for p in SITE.iterdir()
                   if p.is_file()
               ]
 
               if (
                   len(dirs) == 1
                   and not files
-                  and (dirs[0] / 'index.html').is_file()
+                  and (dirs[0] / "index.html").is_file()
               ):
                   folder = dirs[0]
 
-                  for item in folder.iterdir():
+                  for item in list(folder.iterdir()):
                       shutil.move(
                           str(item),
-                          str(site / item.name)
+                          str(SITE / item.name)
                       )
 
                   folder.rmdir()
 
-          if not index.is_file():
+          if not (SITE / "index.html").is_file():
               raise ValueError(
-                  'index.html not found at game root'
+                  "index.html missing at website root"
               )
 
-          if split_required and not (site / 'assets').is_dir():
+          if not (SITE / "assets").is_dir():
               raise ValueError(
-                  'assets/ folder missing from merged game'
+                  "assets folder missing"
               )
 
-          print(
-              f'Validated {len(seen)} files; '
-              'ready for GitHub Pages'
-          )
+          music = SITE / "assets/audio/destinations"
+
+          if music.is_dir():
+              tracks = list(music.glob("*.mp3"))
+              print(f"Destination MP3: {len(tracks)}")
+
+              if len(tracks) not in (0, 30):
+                  raise ValueError(
+                      "Incomplete destination soundtrack set"
+                  )
+
+          print("Deployment validation passed")
+          print(f"ZIP packages: {len(packages)}")
+          print(f"Files: {total_files}")
+          print(f"Extracted bytes: {total_size}")
           PY
 
       - name: Configure Pages
