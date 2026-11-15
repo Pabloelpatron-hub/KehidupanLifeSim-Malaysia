@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Game version (optional, e.g. 16.7)"
+        description: "Game version (optional, e.g. 16.9)"
         required: false
         type: string
 
@@ -59,6 +59,22 @@ jobs:
                   r"^LifeSim_v"
                   r"(?P<major>\d+)_(?P<minor>\d+)"
                   r"_AudioFix_7Parts_"
+                  r"(?P<part>\d+)of(?P<total>\d+)"
+                  r"\.zip$",
+                  re.IGNORECASE
+              ),
+              re.compile(
+                  r"^LifeSim_v"
+                  r"(?P<major>\d+)_(?P<minor>\d+)"
+                  r"_MasterUI_7Parts_"
+                  r"(?P<part>\d+)of(?P<total>\d+)"
+                  r"\.zip$",
+                  re.IGNORECASE
+              ),
+              re.compile(
+                  r"^LifeSim_v"
+                  r"(?P<major>\d+)_(?P<minor>\d+)"
+                  r"_UI_Regression_7Parts_"
                   r"(?P<part>\d+)of(?P<total>\d+)"
                   r"\.zip$",
                   re.IGNORECASE
