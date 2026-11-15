@@ -1,3 +1,4 @@
+
 name: Deploy Game ZIP
 
 on:
@@ -23,164 +24,7 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Extract game
-        run: |
-          mkdir -p _site
-          
-          python3 - <<'PY'
-          import zipfile, os, shutil, glob, re
-
-          files = glob.glob('Kehidupan_LifeSim_v*.zip')
-
-          def version_number(path):
-              match = re.fullmatch(r'Kehidupan_LifeSim_v(\d+(?:\.\d+)*)\.zip', os.path.basename(path))
-              return tuple(map(int, match.group(1).split('.'))) if match else (-1,)
-
-          if files:
-              selected_zip = max(files, key=version_number)
-          else:
-              selected_zip = 'game.zip'
-
-          print('Deploying:', selected_zip)
-
-          with zipfile.ZipFile(selected_zip) as z:
-              for member in z.infolist():
-                  target = os.path.abspath(os.path.join('_site', member.filename))
-                  if not target.startswith(os.path.abspath('_site') + os.sep):
-                      raise ValueError('Unsafe ZIP path')
-              z.extractall('_site')
-
-          if not os.path.isfile('_site/index.html'):
-              dirs = [x for x in os.listdir('_site') if os.path.isdir(os.path.join('_site', x))]
-              if len(dirs) == 1 and os.path.isfile(os.path.join('_site', dirs[0], 'index.html')):
-                  folder = os.path.join('_site', dirs[0])
-                  for item in os.listdir(folder):
-                      shutil.move(os.path.join(folder, item), os.path.join('_site', item))
-                  os.rmdir(folder)
-
-          if not os.path.isfile('_site/index.html'):
-              raise ValueError('index.html not found at game root')
-          PY
-
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload website
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-
-      - name: Deploy website
-        id: deployment
-        uses: actions/deploy-pages@v4name: Deploy Game ZIP
-
-on:
-  push:
-    branches: [main]
-    paths:
-      - '*.zip'
-      - '.github/workflows/deploy.yml'
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: github-pages
-  cancel-in-progress: true
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Extract game
-        run: |
-          mkdir -p _site
-          
-          python3 - <<'PY'
-          import zipfile, os, shutil, glob, re
-
-          files = glob.glob('Kehidupan_LifeSim_v*.zip')
-
-          def version_number(path):
-              match = re.fullmatch(r'Kehidupan_LifeSim_v(\d+(?:\.\d+)*)\.zip', os.path.basename(path))
-              return tuple(map(int, match.group(1).split('.'))) if match else (-1,)
-
-          if files:
-              selected_zip = max(files, key=version_number)
-          else:
-              selected_zip = 'game.zip'
-
-          print('Deploying:', selected_zip)
-
-          with zipfile.ZipFile(selected_zip) as z:
-              for member in z.infolist():
-                  target = os.path.abspath(os.path.join('_site', member.filename))
-                  if not target.startswith(os.path.abspath('_site') + os.sep):
-                      raise ValueError('Unsafe ZIP path')
-              z.extractall('_site')
-
-          if not os.path.isfile('_site/index.html'):
-              dirs = [x for x in os.listdir('_site') if os.path.isdir(os.path.join('_site', x))]
-              if len(dirs) == 1 and os.path.isfile(os.path.join('_site', dirs[0], 'index.html')):
-                  folder = os.path.join('_site', dirs[0])
-                  for item in os.listdir(folder):
-                      shutil.move(os.path.join(folder, item), os.path.join('_site', item))
-                  os.rmdir(folder)
-
-          if not os.path.isfile('_site/index.html'):
-              raise ValueError('index.html not found at game root')
-          PY
-
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload website
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-
-      - name: Deploy website
-        id: deployment
-        uses: actions/deploy-pages@v4me: Deploy Game ZIP
-
-on:
-  push:
-    branches: [main]
-    paths:
-      - '*.zip'
-      - '.github/workflows/deploy.yml'
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: github-pages
-  cancel-in-progress: true
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -190,7 +34,6 @@ jobs:
         run: |
           python3 - <<'PY'
           import glob
-          import os
           import re
           import shutil
           import zipfile
@@ -198,67 +41,139 @@ jobs:
 
           CORE = re.compile(r'^Kehidupan_LifeSim_v(\d+(?:\.\d+)*)\.zip$')
           MIN_SPLIT_VERSION = (12, 6)
+
           site = Path('_site')
           site.mkdir(exist_ok=True)
 
           candidates = []
+
           for filename in glob.glob('Kehidupan_LifeSim_v*.zip'):
               match = CORE.fullmatch(Path(filename).name)
               if match:
-                  version = tuple(int(x) for x in match.group(1).split('.'))
-                  candidates.append((version, match.group(1), Path(filename)))
+                  version = tuple(
+                      int(x) for x in match.group(1).split('.')
+                  )
+                  candidates.append(
+                      (version, match.group(1), Path(filename))
+                  )
 
           if not candidates:
-              raise SystemExit('No valid Kehidupan_LifeSim_vX.Y.zip found')
+              raise SystemExit(
+                  'No valid Kehidupan_LifeSim_vX.Y.zip found'
+              )
 
-          version, version_text, core_zip = max(candidates, key=lambda x: x[0])
-          assets_zip = Path(f'Kehidupan_LifeSim_Assets_v{version_text}.zip')
+          version, version_text, core_zip = max(
+              candidates,
+              key=lambda x: x[0]
+          )
+
+          assets_zip = Path(
+              f'Kehidupan_LifeSim_Assets_v{version_text}.zip'
+          )
+
           split_required = version >= MIN_SPLIT_VERSION
 
           if split_required and not assets_zip.is_file():
-              raise SystemExit(f'Missing matching assets ZIP: {assets_zip}. Deployment blocked.')
+              raise SystemExit(
+                  f'Missing matching assets ZIP: {assets_zip}. '
+                  'Deployment blocked.'
+              )
 
           packages = [core_zip]
+
           if assets_zip.is_file():
               packages.append(assets_zip)
+
           print('Deploying version:', version_text)
           print('Packages:', ', '.join(map(str, packages)))
 
           seen = {}
+
           for package in packages:
               with zipfile.ZipFile(package) as archive:
                   for entry in archive.infolist():
-                      path = Path(entry.filename.replace('\\', '/'))
-                      if (path.is_absolute() or '..' in path.parts or
-                              not path.parts or ':' in path.parts[0]):
-                          raise ValueError(f'Unsafe ZIP path: {entry.filename}')
+                      path = Path(
+                          entry.filename.replace('\\', '/')
+                      )
+
+                      if (
+                          path.is_absolute()
+                          or '..' in path.parts
+                          or not path.parts
+                          or ':' in path.parts[0]
+                      ):
+                          raise ValueError(
+                              f'Unsafe ZIP path: {entry.filename}'
+                          )
+
                       if entry.is_dir():
                           continue
+
                       target = site.joinpath(*path.parts)
+
                       if target.is_symlink():
-                          raise ValueError(f'Symlink destination forbidden: {target}')
+                          raise ValueError(
+                              f'Symlink destination forbidden: {target}'
+                          )
+
                       if path.as_posix() in seen:
-                          raise ValueError(f'Duplicate path across ZIPs: {path} ({seen[path.as_posix()]} and {package})')
+                          raise ValueError(
+                              f'Duplicate path across ZIPs: {path}'
+                          )
+
                       seen[path.as_posix()] = str(package)
-                      target.parent.mkdir(parents=True, exist_ok=True)
-                      with archive.open(entry) as src, target.open('wb') as dst:
-                          shutil.copyfileobj(src, dst)
+
+                      target.parent.mkdir(
+                          parents=True,
+                          exist_ok=True
+                      )
+
+                      with archive.open(entry) as src:
+                          with target.open('wb') as dst:
+                              shutil.copyfileobj(src, dst)
 
           index = site / 'index.html'
+
           if not index.is_file():
-              dirs = [p for p in site.iterdir() if p.is_dir()]
-              files = [p for p in site.iterdir() if p.is_file()]
-              if len(dirs) == 1 and not files and (dirs[0] / 'index.html').is_file():
+              dirs = [
+                  p for p in site.iterdir()
+                  if p.is_dir()
+              ]
+
+              files = [
+                  p for p in site.iterdir()
+                  if p.is_file()
+              ]
+
+              if (
+                  len(dirs) == 1
+                  and not files
+                  and (dirs[0] / 'index.html').is_file()
+              ):
                   folder = dirs[0]
+
                   for item in folder.iterdir():
-                      shutil.move(str(item), str(site / item.name))
+                      shutil.move(
+                          str(item),
+                          str(site / item.name)
+                      )
+
                   folder.rmdir()
 
           if not index.is_file():
-              raise ValueError('index.html not found at game root')
+              raise ValueError(
+                  'index.html not found at game root'
+              )
+
           if split_required and not (site / 'assets').is_dir():
-              raise ValueError('assets/ folder missing from merged game')
-          print(f'Validated {len(seen)} files; ready for GitHub Pages')
+              raise ValueError(
+                  'assets/ folder missing from merged game'
+              )
+
+          print(
+              f'Validated {len(seen)} files; '
+              'ready for GitHub Pages'
+          )
           PY
 
       - name: Configure Pages
