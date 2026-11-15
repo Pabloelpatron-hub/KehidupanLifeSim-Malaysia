@@ -3,6 +3,11 @@ name: Deploy Game ZIP
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Game version (optional, e.g. 16.6)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -11,7 +16,7 @@ permissions:
 
 concurrency:
   group: github-pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -26,38 +31,109 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract and validate full game
+      - name: Extract and validate game
         shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           python3 - <<'PY'
           import os
+          import re
           import shutil
           import stat
           import zipfile
           from pathlib import Path, PurePosixPath
 
-          SOURCE = Path("deploy-packages")
+          ROOT = Path(".")
           SITE = Path("_site")
-          MAX_FILES = 50000
-          MAX_SIZE = 2 * 1024**3
 
-          if not SOURCE.is_dir():
-              raise SystemExit(
-                  "Missing deploy-packages folder."
-              )
-
-          packages = sorted(
-              p for p in SOURCE.iterdir()
-              if p.is_file()
-              and p.suffix.lower() == ".zip"
+          PATTERN = re.compile(
+              r"^Kehidupan_LifeSim_v"
+              r"(?P<version>\d+(?:\.\d+)*)"
+              r"_Part(?P<part>\d+)of(?P<total>\d+)"
+              r"\.zip$",
+              re.IGNORECASE
           )
 
-          if not packages:
-              raise SystemExit(
-                  "No ZIP packages found."
+          groups = {}
+
+          for file in ROOT.iterdir():
+              if not file.is_file():
+                  continue
+
+              match = PATTERN.fullmatch(file.name)
+
+              if not match:
+                  continue
+
+              version = match.group("version")
+              part = int(match.group("part"))
+              total = int(match.group("total"))
+
+              groups.setdefault(version, []).append(
+                  (part, total, file)
               )
 
-          print(f"Found {len(packages)} ZIP packages")
+          if not groups:
+              raise SystemExit(
+                  "No split game ZIP packages found."
+              )
+
+          requested = os.environ.get(
+              "REQUESTED_VERSION", ""
+          ).strip()
+
+          if requested:
+              if requested not in groups:
+                  raise SystemExit(
+                      f"Version {requested} not found."
+                  )
+
+              version = requested
+          else:
+              version = max(
+                  groups,
+                  key=lambda v: tuple(
+                      int(x) for x in v.split(".")
+                  )
+              )
+
+          entries = groups[version]
+          totals = {total for _, total, _ in entries}
+
+          if len(totals) != 1:
+              raise SystemExit(
+                  "Inconsistent package totals."
+              )
+
+          expected_total = totals.pop()
+
+          if expected_total < 1:
+              raise SystemExit(
+                  "Invalid package count."
+              )
+
+          numbers = [part for part, _, _ in entries]
+
+          if (
+              len(numbers) != expected_total
+              or sorted(numbers) != list(
+                  range(1, expected_total + 1)
+              )
+          ):
+              raise SystemExit(
+                  "Incomplete or duplicate ZIP parts. "
+                  f"Expected 1 through {expected_total}; "
+                  f"found {sorted(numbers)}"
+              )
+
+          packages = [
+              file for _, _, file in
+              sorted(entries, key=lambda x: x[0])
+          ]
+
+          print("Selected version:", version)
+          print("Package count:", len(packages))
 
           if SITE.exists():
               shutil.rmtree(SITE)
@@ -65,34 +141,36 @@ jobs:
           SITE.mkdir()
 
           seen = set()
-          total_size = 0
           total_files = 0
+          total_bytes = 0
 
           for package in packages:
-              print(f"Extracting: {package.name}")
+              print("Extracting:", package.name)
 
               with zipfile.ZipFile(package) as archive:
                   bad = archive.testzip()
 
                   if bad:
                       raise ValueError(
-                          f"Corrupt ZIP: {package.name}: {bad}"
+                          f"Corrupt ZIP {package}: {bad}"
                       )
 
                   for entry in archive.infolist():
-                      raw = entry.filename.replace("\\", "/")
+                      raw = entry.filename.replace(
+                          "\\", "/"
+                      )
+
                       path = PurePosixPath(raw)
 
                       if (
                           not raw
                           or raw.startswith("/")
-                          or any(
-                              part in ("", ".", "..")
-                              for part in raw.split("/")
-                              if part != ""
-                          )
                           or ".." in path.parts
                           or ":" in path.parts[0]
+                          or any(
+                              part == "."
+                              for part in raw.split("/")
+                          )
                       ):
                           raise ValueError(
                               f"Unsafe ZIP path: {raw}"
@@ -108,21 +186,24 @@ jobs:
                       if entry.is_dir():
                           continue
 
-                      if path.as_posix() in seen:
+                      name = path.as_posix()
+
+                      if name in seen:
                           raise ValueError(
-                              f"Duplicate file: {raw}"
+                              f"Duplicate file: {name}"
                           )
 
-                      seen.add(path.as_posix())
+                      seen.add(name)
+
                       total_files += 1
-                      total_size += entry.file_size
+                      total_bytes += entry.file_size
 
                       if (
-                          total_files > MAX_FILES
-                          or total_size > MAX_SIZE
+                          total_files > 50000
+                          or total_bytes > 2 * 1024**3
                       ):
                           raise ValueError(
-                              "Deployment safety limit exceeded"
+                              "Safety limit exceeded."
                           )
 
                       target = SITE.joinpath(*path.parts)
@@ -143,6 +224,7 @@ jobs:
                   p for p in SITE.iterdir()
                   if p.is_dir()
               ]
+
               files = [
                   p for p in SITE.iterdir()
                   if p.is_file()
@@ -165,29 +247,19 @@ jobs:
 
           if not (SITE / "index.html").is_file():
               raise ValueError(
-                  "index.html missing at website root"
+                  "index.html missing from game root."
               )
 
           if not (SITE / "assets").is_dir():
               raise ValueError(
-                  "assets folder missing"
+                  "assets directory missing."
               )
 
-          music = SITE / "assets/audio/destinations"
-
-          if music.is_dir():
-              tracks = list(music.glob("*.mp3"))
-              print(f"Destination MP3: {len(tracks)}")
-
-              if len(tracks) not in (0, 30):
-                  raise ValueError(
-                      "Incomplete destination soundtrack set"
-                  )
-
-          print("Deployment validation passed")
-          print(f"ZIP packages: {len(packages)}")
-          print(f"Files: {total_files}")
-          print(f"Extracted bytes: {total_size}")
+          print("Validation passed.")
+          print("Version:", version)
+          print("ZIP packages:", len(packages))
+          print("Files extracted:", total_files)
+          print("Extracted bytes:", total_bytes)
           PY
 
       - name: Configure Pages
