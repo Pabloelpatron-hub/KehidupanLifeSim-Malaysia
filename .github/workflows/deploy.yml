@@ -4,9 +4,10 @@ name: Deploy Game ZIP
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Game version (optional, e.g. 16.9)"
-        required: false
+      release:
+        description: "Release name"
+        required: true
+        default: "UIStudio_v2_LayoutPolish_Followup"
         type: string
 
 permissions:
@@ -34,7 +35,8 @@ jobs:
       - name: Extract and validate game
         shell: bash
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_RELEASE: ${{ inputs.release }}
+
         run: |
           python3 - <<'PY'
           import os
@@ -47,47 +49,30 @@ jobs:
           ROOT = Path(".")
           SITE = Path("_site")
 
-          PATTERNS = [
-              re.compile(
-                  r"^Kehidupan_LifeSim_v"
-                  r"(?P<version>\d+(?:\.\d+)*)"
-                  r"_Part(?P<part>\d+)of(?P<total>\d+)"
-                  r"\.zip$",
-                  re.IGNORECASE
-              ),
-              re.compile(
-                  r"^LifeSim_v"
-                  r"(?P<major>\d+)_(?P<minor>\d+)"
-                  r"_AudioFix_7Parts_"
-                  r"(?P<part>\d+)of(?P<total>\d+)"
-                  r"\.zip$",
-                  re.IGNORECASE
-              ),
-              re.compile(
-                  r"^LifeSim_v"
-                  r"(?P<major>\d+)_(?P<minor>\d+)"
-                  r"_MasterUI_7Parts_"
-                  r"(?P<part>\d+)of(?P<total>\d+)"
-                  r"\.zip$",
-                  re.IGNORECASE
-              ),
-              re.compile(
-                  r"^LifeSim_v"
-                  r"(?P<major>\d+)_(?P<minor>\d+)"
-                  r"_UI_Regression_7Parts_"
-                  r"(?P<part>\d+)of(?P<total>\d+)"
-                  r"\.zip$",
-                  re.IGNORECASE
-              ),
-              re.compile(
-                  r"^LifeSim_v"
-                  r"(?P<major>\d+)_(?P<minor>\d+)"
-                  r"_SMALL_"
-                  r"(?P<part>\d+)of(?P<total>\d+)"
-                  r"\.zip$",
-                  re.IGNORECASE
-              ),
-          ]
+          RELEASE = os.environ.get(
+              "REQUESTED_RELEASE", ""
+          ).strip()
+
+          if not RELEASE:
+              raise SystemExit(
+                  "Release name is required."
+              )
+
+          if not re.fullmatch(
+              r"[A-Za-z0-9_.-]+", RELEASE
+          ):
+              raise SystemExit(
+                  "Invalid release name."
+              )
+
+          PATTERN = re.compile(
+              r"^LifeSim_v"
+              r"(?P<major>\d+)_(?P<minor>\d+)_"
+              r"(?P<release>[A-Za-z0-9_.-]+)_"
+              r"(?P<part>\d+)of(?P<total>\d+)"
+              r"\.zip$",
+              re.IGNORECASE
+          )
 
           groups = {}
 
@@ -95,61 +80,55 @@ jobs:
               if not file.is_file():
                   continue
 
-              for pattern in PATTERNS:
-                  match = pattern.fullmatch(file.name)
+              match = PATTERN.fullmatch(file.name)
 
-                  if not match:
-                      continue
+              if not match:
+                  continue
 
-                  data = match.groupdict()
+              data = match.groupdict()
 
-                  if data.get("version"):
-                      version = data["version"]
-                  else:
-                      version = (
-                          f"{data['major']}."
-                          f"{data['minor']}"
-                      )
+              version = (
+                  f"{data['major']}.{data['minor']}"
+              )
 
-                  part = int(data["part"])
-                  total = int(data["total"])
+              release = data["release"]
+              part = int(data["part"])
+              total = int(data["total"])
 
-                  groups.setdefault(version, []).append(
-                      (part, total, file)
-                  )
-                  break
+              key = (version, release)
 
-          if not groups:
+              groups.setdefault(key, []).append(
+                  (part, total, file)
+              )
+
+          matching = [
+              key for key in groups
+              if key[1].lower() == RELEASE.lower()
+          ]
+
+          if not matching:
               raise SystemExit(
-                  "No split game ZIP packages found."
+                  f"Release '{RELEASE}' not found. "
+                  f"Available: {sorted(groups)}"
               )
 
-          requested = os.environ.get(
-              "REQUESTED_VERSION", ""
-          ).strip()
-
-          if requested:
-              if requested not in groups:
-                  raise SystemExit(
-                      f"Version {requested} not found. "
-                      f"Available: {sorted(groups)}"
-                  )
-              version = requested
-          else:
-              version = max(
-                  groups,
-                  key=lambda v: tuple(
-                      int(x) for x in v.split(".")
-                  )
+          selected = max(
+              matching,
+              key=lambda key: tuple(
+                  int(x) for x in key[0].split(".")
               )
+          )
 
-          entries = groups[version]
-          totals = {total for _, total, _ in entries}
+          version, release = selected
+          entries = groups[selected]
+
+          totals = {
+              total for _, total, _ in entries
+          }
 
           if len(totals) != 1:
               raise SystemExit(
-                  "Inconsistent package totals for "
-                  f"version {version}."
+                  "Inconsistent ZIP package totals."
               )
 
           expected_total = totals.pop()
@@ -159,7 +138,9 @@ jobs:
                   "Invalid package count."
               )
 
-          numbers = [part for part, _, _ in entries]
+          numbers = [
+              part for part, _, _ in entries
+          ]
 
           if (
               len(numbers) != expected_total
@@ -169,7 +150,7 @@ jobs:
           ):
               raise SystemExit(
                   "Incomplete or duplicate ZIP parts. "
-                  f"Expected 1 through {expected_total}; "
+                  f"Expected 1 to {expected_total}; "
                   f"found {sorted(numbers)}"
               )
 
@@ -179,6 +160,7 @@ jobs:
           ]
 
           print("Selected version:", version)
+          print("Selected release:", release)
           print("Package count:", len(packages))
 
           for package in packages:
@@ -217,7 +199,7 @@ jobs:
                           or ".." in path.parts
                           or ":" in path.parts[0]
                           or any(
-                              part == "."
+                              part in ("", ".")
                               for part in raw.split("/")
                           )
                       ):
@@ -255,7 +237,9 @@ jobs:
                               "Safety limit exceeded."
                           )
 
-                      target = SITE.joinpath(*path.parts)
+                      target = SITE.joinpath(
+                          *path.parts
+                      )
 
                       target.parent.mkdir(
                           parents=True,
@@ -306,6 +290,7 @@ jobs:
 
           print("Validation passed.")
           print("Version:", version)
+          print("Release:", release)
           print("ZIP packages:", len(packages))
           print("Files extracted:", total_files)
           print("Extracted bytes:", total_bytes)
