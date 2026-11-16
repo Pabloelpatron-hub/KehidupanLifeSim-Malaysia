@@ -4,10 +4,10 @@ name: Deploy Game ZIP
 on:
   workflow_dispatch:
     inputs:
-      release:
-        description: "Release name"
+      release_tag:
+        description: "GitHub Release tag (atau latest)"
         required: true
-        default: "UI_Fix"
+        default: "v17.0-ui-fix"
         type: string
 
 permissions:
@@ -29,243 +29,124 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract and validate game
+      - name: Download and validate release
         shell: bash
         env:
-          REQUESTED_RELEASE: ${{ inputs.release }}
-
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
+          set -euo pipefail
+
+          mkdir -p _download
+
+          if [ "$RELEASE_TAG" = "latest" ]; then
+            gh release download \
+              --repo "$GH_REPO" \
+              --pattern "*.zip" \
+              --dir _download
+          else
+            gh release download "$RELEASE_TAG" \
+              --repo "$GH_REPO" \
+              --pattern "*.zip" \
+              --dir _download
+          fi
+
           python3 - <<'PY'
-          import os
-          import re
           import shutil
           import stat
           import zipfile
           from pathlib import Path, PurePosixPath
 
-          ROOT = Path(".")
-          SITE = Path("_site")
+          downloads = list(Path("_download").glob("*.zip"))
 
-          RELEASE = os.environ.get(
-              "REQUESTED_RELEASE", ""
-          ).strip()
-
-          if not RELEASE:
+          if len(downloads) != 1:
               raise SystemExit(
-                  "Release name is required."
+                  f"Expected exactly one ZIP, found {len(downloads)}"
               )
 
-          if not re.fullmatch(
-              r"[A-Za-z0-9_.-]+", RELEASE
-          ):
-              raise SystemExit(
-                  "Invalid release name."
-              )
+          package = downloads[0]
+          site = Path("_site")
+          site.mkdir(exist_ok=True)
 
-          PATTERN = re.compile(
-              r"^LifeSim_v"
-              r"(?P<major>\d+)_(?P<minor>\d+)_"
-              r"(?P<release>[A-Za-z0-9_.-]+)_"
-              r"(?P<part>\d+)of(?P<total>\d+)"
-              r"(?:\(\d+\))?"
-              r"\.zip$",
-              re.IGNORECASE
-          )
-
-          groups = {}
-
-          for file in ROOT.iterdir():
-              if not file.is_file():
-                  continue
-
-              match = PATTERN.fullmatch(file.name)
-
-              if not match:
-                  continue
-
-              data = match.groupdict()
-
-              version = (
-                  f"{data['major']}.{data['minor']}"
-              )
-
-              release = data["release"]
-              part = int(data["part"])
-              total = int(data["total"])
-
-              key = (version, release.lower())
-
-              groups.setdefault(key, []).append(
-                  (part, total, file)
-              )
-
-          matching = [
-              key for key in groups
-              if key[1] == RELEASE.lower()
-          ]
-
-          if not matching:
-              raise SystemExit(
-                  f"Release '{RELEASE}' not found. "
-                  f"Available: {sorted(groups)}"
-              )
-
-          selected = max(
-              matching,
-              key=lambda key: tuple(
-                  int(x) for x in key[0].split(".")
-              )
-          )
-
-          version, release = selected
-          entries = groups[selected]
-
-          totals = {
-              total for _, total, _ in entries
-          }
-
-          if len(totals) != 1:
-              raise SystemExit(
-                  "Inconsistent ZIP package totals."
-              )
-
-          expected_total = totals.pop()
-
-          if expected_total < 1:
-              raise SystemExit(
-                  "Invalid package count."
-              )
-
-          numbers = [
-              part for part, _, _ in entries
-          ]
-
-          if (
-              len(numbers) != expected_total
-              or sorted(numbers) != list(
-                  range(1, expected_total + 1)
-              )
-          ):
-              raise SystemExit(
-                  "Incomplete or duplicate ZIP parts. "
-                  f"Expected 1 to {expected_total}; "
-                  f"found {sorted(numbers)}"
-              )
-
-          packages = [
-              file for _, _, file in
-              sorted(entries, key=lambda x: x[0])
-          ]
-
-          print("Selected version:", version)
-          print("Selected release:", release)
-          print("Package count:", len(packages))
-
-          for package in packages:
-              print("Package:", package.name)
-
-          if SITE.exists():
-              shutil.rmtree(SITE)
-
-          SITE.mkdir()
+          max_files = 50000
+          max_bytes = 2 * 1024**3
 
           seen = set()
           total_files = 0
           total_bytes = 0
 
-          MAX_FILES = 50000
-          MAX_BYTES = 2 * 1024**3
+          with zipfile.ZipFile(package) as archive:
+              bad = archive.testzip()
 
-          for package in packages:
-              print("Extracting:", package.name)
+              if bad:
+                  raise ValueError(
+                      f"Corrupt ZIP entry: {bad}"
+                  )
 
-              with zipfile.ZipFile(package) as archive:
-                  bad = archive.testzip()
+              for entry in archive.infolist():
+                  raw = entry.filename.replace("\\", "/")
+                  path = PurePosixPath(raw)
 
-                  if bad:
+                  if (
+                      not raw
+                      or raw.startswith("/")
+                      or ".." in path.parts
+                      or ":" in path.parts[0]
+                      or any(
+                          part in ("", ".")
+                          for part in raw.rstrip("/").split("/")
+                      )
+                  ):
                       raise ValueError(
-                          f"Corrupt ZIP {package}: {bad}"
+                          f"Unsafe ZIP path: {raw}"
                       )
 
-                  for entry in archive.infolist():
-                      raw = entry.filename.replace(
-                          "\\", "/"
+                  mode = entry.external_attr >> 16
+
+                  if stat.S_ISLNK(mode):
+                      raise ValueError(
+                          f"Symlink forbidden: {raw}"
                       )
 
-                      path = PurePosixPath(raw)
+                  if entry.is_dir():
+                      continue
 
-                      if (
-                          not raw
-                          or raw.startswith("/")
-                          or ".." in path.parts
-                          or ":" in path.parts[0]
-                          or any(
-                              part in ("", ".")
-                              for part in raw.rstrip("/").split("/")
-                          )
-                      ):
-                          raise ValueError(
-                              f"Unsafe ZIP path: {raw}"
-                          )
+                  name = path.as_posix()
 
-                      mode = entry.external_attr >> 16
-
-                      if stat.S_ISLNK(mode):
-                          raise ValueError(
-                              f"Symlink forbidden: {raw}"
-                          )
-
-                      if entry.is_dir():
-                          continue
-
-                      name = path.as_posix()
-
-                      if name in seen:
-                          raise ValueError(
-                              f"Duplicate file: {name}"
-                          )
-
-                      seen.add(name)
-
-                      total_files += 1
-                      total_bytes += entry.file_size
-
-                      if (
-                          total_files > MAX_FILES
-                          or total_bytes > MAX_BYTES
-                      ):
-                          raise ValueError(
-                              "Safety limit exceeded."
-                          )
-
-                      target = SITE.joinpath(
-                          *path.parts
+                  if name in seen:
+                      raise ValueError(
+                          f"Duplicate file: {name}"
                       )
 
-                      target.parent.mkdir(
-                          parents=True,
-                          exist_ok=True
+                  seen.add(name)
+                  total_files += 1
+                  total_bytes += entry.file_size
+
+                  if (
+                      total_files > max_files
+                      or total_bytes > max_bytes
+                  ):
+                      raise ValueError(
+                          "Extraction limit exceeded"
                       )
 
-                      with archive.open(entry) as src:
-                          with target.open("wb") as dst:
-                              shutil.copyfileobj(src, dst)
+                  target = site.joinpath(*path.parts)
+                  target.parent.mkdir(
+                      parents=True,
+                      exist_ok=True
+                  )
 
-          index = SITE / "index.html"
+                  with archive.open(entry) as src:
+                      with target.open("wb") as dst:
+                          shutil.copyfileobj(src, dst)
 
-          if not index.is_file():
-              dirs = [
-                  p for p in SITE.iterdir()
-                  if p.is_dir()
-              ]
-
-              files = [
-                  p for p in SITE.iterdir()
-                  if p.is_file()
-              ]
+          if not (site / "index.html").is_file():
+              dirs = [p for p in site.iterdir() if p.is_dir()]
+              files = [p for p in site.iterdir() if p.is_file()]
 
               if (
                   len(dirs) == 1
@@ -273,40 +154,32 @@ jobs:
                   and (dirs[0] / "index.html").is_file()
               ):
                   folder = dirs[0]
-
                   for item in list(folder.iterdir()):
-                      shutil.move(
-                          str(item),
-                          str(SITE / item.name)
-                      )
-
+                      shutil.move(str(item), str(site / item.name))
                   folder.rmdir()
 
-          if not (SITE / "index.html").is_file():
+          if not (site / "index.html").is_file():
               raise ValueError(
-                  "index.html missing from game root."
+                  "Game index.html missing"
               )
 
-          if not (SITE / "assets").is_dir():
+          if not (site / "assets").is_dir():
               raise ValueError(
-                  "assets directory missing."
+                  "Game assets directory missing"
               )
 
-          print("==============================")
+          (site / ".nojekyll").touch()
+
           print("VALIDATION PASSED")
-          print("==============================")
-          print("Version:", version)
-          print("Release:", release)
-          print("ZIP packages:", len(packages))
-          print("Files extracted:", total_files)
-          print("Extracted bytes:", total_bytes)
-          print("==============================")
+          print("Package:", package.name)
+          print("Files:", total_files)
+          print("Bytes:", total_bytes)
           PY
 
-      - name: Configure GitHub Pages
+      - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload website artifact
+      - name: Upload website
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
