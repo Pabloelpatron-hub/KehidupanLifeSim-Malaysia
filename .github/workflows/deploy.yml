@@ -7,7 +7,7 @@ on:
       release:
         description: "Release name"
         required: true
-        default: "UIStudio_v2_LayoutPolish_Followup"
+        default: "UI_Fix"
         type: string
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Extract and validate game
@@ -70,6 +70,7 @@ jobs:
               r"(?P<major>\d+)_(?P<minor>\d+)_"
               r"(?P<release>[A-Za-z0-9_.-]+)_"
               r"(?P<part>\d+)of(?P<total>\d+)"
+              r"(?:\(\d+\))?"
               r"\.zip$",
               re.IGNORECASE
           )
@@ -95,7 +96,7 @@ jobs:
               part = int(data["part"])
               total = int(data["total"])
 
-              key = (version, release)
+              key = (version, release.lower())
 
               groups.setdefault(key, []).append(
                   (part, total, file)
@@ -103,7 +104,7 @@ jobs:
 
           matching = [
               key for key in groups
-              if key[1].lower() == RELEASE.lower()
+              if key[1] == RELEASE.lower()
           ]
 
           if not matching:
@@ -175,6 +176,9 @@ jobs:
           total_files = 0
           total_bytes = 0
 
+          MAX_FILES = 50000
+          MAX_BYTES = 2 * 1024**3
+
           for package in packages:
               print("Extracting:", package.name)
 
@@ -200,7 +204,7 @@ jobs:
                           or ":" in path.parts[0]
                           or any(
                               part in ("", ".")
-                              for part in raw.split("/")
+                              for part in raw.rstrip("/").split("/")
                           )
                       ):
                           raise ValueError(
@@ -230,8 +234,8 @@ jobs:
                       total_bytes += entry.file_size
 
                       if (
-                          total_files > 50000
-                          or total_bytes > 2 * 1024**3
+                          total_files > MAX_FILES
+                          or total_bytes > MAX_BYTES
                       ):
                           raise ValueError(
                               "Safety limit exceeded."
@@ -288,18 +292,21 @@ jobs:
                   "assets directory missing."
               )
 
-          print("Validation passed.")
+          print("==============================")
+          print("VALIDATION PASSED")
+          print("==============================")
           print("Version:", version)
           print("Release:", release)
           print("ZIP packages:", len(packages))
           print("Files extracted:", total_files)
           print("Extracted bytes:", total_bytes)
+          print("==============================")
           PY
 
-      - name: Configure Pages
+      - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload website
+      - name: Upload website artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
