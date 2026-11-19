@@ -7,11 +7,12 @@ on:
       release_tag:
         description: "GitHub Release tag (atau latest)"
         required: true
-        default: "v17.0-ui-fix"
+        default: "latest"
         type: string
 
 permissions:
   contents: read
+  actions: read
   pages: write
   id-token: write
 
@@ -29,10 +30,10 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download and validate release
+      - name: Download and validate release ZIP
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -42,6 +43,9 @@ jobs:
           set -euo pipefail
 
           mkdir -p _download
+
+          echo "Repository: $GH_REPO"
+          echo "Release: $RELEASE_TAG"
 
           if [ "$RELEASE_TAG" = "latest" ]; then
             gh release download \
@@ -54,6 +58,9 @@ jobs:
               --pattern "*.zip" \
               --dir _download
           fi
+
+          echo "Downloaded files:"
+          ls -lah _download
 
           python3 - <<'PY'
           import shutil
@@ -145,8 +152,14 @@ jobs:
                           shutil.copyfileobj(src, dst)
 
           if not (site / "index.html").is_file():
-              dirs = [p for p in site.iterdir() if p.is_dir()]
-              files = [p for p in site.iterdir() if p.is_file()]
+              dirs = [
+                  p for p in site.iterdir()
+                  if p.is_dir()
+              ]
+              files = [
+                  p for p in site.iterdir()
+                  if p.is_file()
+              ]
 
               if (
                   len(dirs) == 1
@@ -154,8 +167,13 @@ jobs:
                   and (dirs[0] / "index.html").is_file()
               ):
                   folder = dirs[0]
+
                   for item in list(folder.iterdir()):
-                      shutil.move(str(item), str(site / item.name))
+                      shutil.move(
+                          str(item),
+                          str(site / item.name)
+                      )
+
                   folder.rmdir()
 
           if not (site / "index.html").is_file():
@@ -176,14 +194,62 @@ jobs:
           print("Bytes:", total_bytes)
           PY
 
-      - name: Configure Pages
+      - name: Verify website directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Website files:"
+          ls -lah _site
+
+          test -f _site/index.html
+          test -d _site/assets
+
+          echo "Website directory verified."
+
+      - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload website
+      - name: Upload website artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
+          name: github-pages
+
+      - name: Verify uploaded artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          echo "Checking uploaded Pages artifact..."
+
+          for attempt in 1 2 3 4 5; do
+            COUNT=$(gh api \
+              "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" \
+              --jq '[.artifacts[] | select(.name == "github-pages" and .expired == false)] | length')
+
+            echo "Attempt $attempt: $COUNT artifact(s)"
+
+            if [ "$COUNT" -eq 1 ]; then
+              echo "Pages artifact verified."
+              exit 0
+            fi
+
+            sleep 5
+          done
+
+          echo "::error::github-pages artifact not found"
+          exit 1
 
       - name: Deploy website
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Deployment completed
+        shell: bash
+        run: |
+          echo "GitHub Pages deployment completed."
